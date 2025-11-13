@@ -676,16 +676,34 @@ router.post('/', async (req, res) => {
     // 2) trip existent sau îl creăm
     let trip_id;
     const tripRes = await db.query(
-      `SELECT id, boarding_started FROM trips
-        WHERE route_schedule_id = ?
+      `SELECT id, boarding_started, route_schedule_id
+         FROM trips
+        WHERE route_id = ?
           AND vehicle_id = ?
           AND date = DATE(?)
           AND TIME(time) = TIME(?)
         LIMIT 1`,
-      [resolvedScheduleId, vehicle_id, date, canonicalTime]
+      [route_id, vehicle_id, date, canonicalTime]
     );
     if (tripRes.rows.length > 0) {
       const existingTrip = tripRes.rows[0];
+      if (existingTrip.route_schedule_id == null && resolvedScheduleId) {
+        try {
+          await db.query(
+            `UPDATE trips
+                SET route_schedule_id = ?
+              WHERE id = ?`,
+            [resolvedScheduleId, existingTrip.id]
+          );
+        } catch (updateErr) {
+          console.warn('Nu am putut sincroniza route_schedule_id pentru cursa existentă', {
+            tripId: existingTrip.id,
+            route_schedule_id: existingTrip.route_schedule_id,
+            new_route_schedule_id: resolvedScheduleId,
+            error: updateErr instanceof Error ? updateErr.message : updateErr,
+          });
+        }
+      }
       if (Number(existingTrip.boarding_started)) {
         if (hasNewPassengers) {
           return abortWithError(409, { error: 'Îmbarcarea a început pentru această cursă. Nu se mai pot face rezervări noi.' });
@@ -693,12 +711,37 @@ router.post('/', async (req, res) => {
       }
       trip_id = existingTrip.id;
     } else {
-      const ins = await db.query(
-        `INSERT INTO trips (route_schedule_id, route_id, vehicle_id, date, time)
-         VALUES (?, ?, ?, ?, TIME(?))`,
-        [resolvedScheduleId, route_id, vehicle_id, date, canonicalTime]
-      );
-      trip_id = ins.insertId;
+      try {
+        const ins = await db.query(
+          `INSERT INTO trips (route_schedule_id, route_id, vehicle_id, date, time)
+           VALUES (?, ?, ?, ?, TIME(?))`,
+          [resolvedScheduleId, route_id, vehicle_id, date, canonicalTime]
+        );
+        trip_id = ins.insertId;
+      } catch (err) {
+        if (err && err.code === 'ER_DUP_ENTRY') {
+          const dupTrip = await db.query(
+            `SELECT id, boarding_started
+               FROM trips
+              WHERE route_id = ?
+                AND vehicle_id = ?
+                AND date = DATE(?)
+                AND TIME(time) = TIME(?)
+              LIMIT 1`,
+            [route_id, vehicle_id, date, canonicalTime]
+          );
+          if (dupTrip.rows.length === 0) {
+            throw err;
+          }
+          const existingTrip = dupTrip.rows[0];
+          trip_id = existingTrip.id;
+          if (Number(existingTrip.boarding_started) && hasNewPassengers) {
+            return abortWithError(409, { error: 'Îmbarcarea a început pentru această cursă. Nu se mai pot face rezervări noi.' });
+          }
+        } else {
+          throw err;
+        }
+      }
     }
 
     // 3) pasageri (creăm/actualizăm rezervări, calcule, plăți)
