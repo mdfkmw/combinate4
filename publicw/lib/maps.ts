@@ -15,6 +15,7 @@ export function buildGoogleMapsUrls(
   const latNum = Number(lat)
   const lngNum = Number(lng)
   if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return null
+  if (latNum === 0 || lngNum === 0) return null
   const latStr = normalizeCoordinate(latNum)
   const lngStr = normalizeCoordinate(lngNum)
   const coords = `${latStr},${lngStr}`
